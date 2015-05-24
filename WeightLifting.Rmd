@@ -1,0 +1,138 @@
+---
+output: html_document
+---
+## Classifying and predicting barbell lifting
+
+```{r, message=FALSE}
+library(ggplot2)
+library(lattice)
+library(caret)
+library(randomForest)
+```
+### Executive summary
+In this report, part of the *Practical Machine Learning* class organised by Johns Hopkins on Coursera, barbell lifting data are analysed based on accelerometer data. These data are used to train a random forest model, which is subsequently applied on a validation set to predict the out-of-sample error, and 20 testing observations. Overall, it is seen that the algorithm yields very accurate results, even with a limited number of trees.
+
+### The data
+
+#### Introduction to the data
+The data analysed hereunder are recorded from accelerometers on the belt, forearm, arm and dumbbell of six participants while doing barbell lifts. In this controlled experiment, five types of barbell lifts were considered, of which only one is classified as correct (classe A). The other classes (B to E) are not classified as correct lifts. More information on these data is available on [this website](http://groupware.les.inf.puc-rio.br/har).
+
+#### Downloading the data
+The data used in this assignment can be found online. In the following code, these data is downloaded if not already present. Subsequently, the training data is subdivided in a `training` and a `validation` data frame, while the testing data is stored in the `testing` data frame.  
+```{r}
+if(!file.exists('./data')){
+  dir.create('./data')
+  }
+if(!file.exists('./data/training.csv')){
+  URLtrain <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+  download.file(URLtrain, destfile='./data/training.csv', method='curl')
+}
+if(!file.exists('./data/testing.csv')){
+  URLtest <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+  download.file(URLtest, destfile='./data/testing.csv', method='curl')
+}
+
+trainval <- read.csv('./data/training.csv')
+testing <- read.csv('./data/testing.csv')
+
+set.seed(31415)
+inTrain <- createDataPartition(y=trainval$classe, p=0.75, list=FALSE)
+validating <- trainval[-inTrain,]
+training <- trainval[inTrain,]
+```
+
+We see that the training date set is huge, containing 160 variables. Moreover, the variable we wish to predict, `classe`, can take five possible values, which are more or less equally encountered:
+```{r}
+dim(training)
+qplot(classe, data=training, fill=classe, xlab='Classe', ylab='Count') + guides(fill=FALSE)
+```
+
+#### Cleaning the data
+Let's first clean these data, removing all variables with a variance close to zero. These near-zero-variance variables will not be able to distinguish between the different classes, and are hence unnecessary in a machine learning algorithm. This can easily be done using the `nearZeroVar` function of the *caret* package, removing 57 of the 160 variables. 
+```{r, cache=TRUE}
+nZV <- nearZeroVar(training)
+length(nZV)
+training <- training[ ,-nZV]
+validating <- validating[ ,-nZV]
+testing <- testing[ ,-nZV]
+```
+
+Moreover, since we do not expect the outcome to be dependent on the user nor the time when the exercise was performed, we remove the first six variables, only containing this kind of information:
+```{r}
+training <- training[ ,-(1:6)]
+validating <- validating[ ,-(1:6)]
+testing <- testing[ ,-(1:6)]
+```
+
+Furthermore, some of the variables are mostly `NA`. Since the information contained in these variables is limited, we will remove any variable containing more than 90% `NA`s:
+```{r}
+NA_var <- apply(training, 2, function(x) sum(is.na(x)) > 0.9*nrow(training))
+training <- training[ ,!NA_var]
+validating <- validating[ ,!NA_var]
+testing <- testing[ ,!NA_var]
+```
+
+After these two preprocessing steps, 53 variables remain: 52 regressors to predict the outcome of `classe`.
+```{r}
+dim(training)
+```
+
+### Model development
+
+#### Building a random forest model
+We will use the **random forest** algorithm from the *randomForest* package to predict the `classe` based on all other regressors. This algorithm is expected to be rather accurate, but less interpretable. Moreover, it is both time and memory consuming, so the number of trees used in this algorithm is set to 50. Better results can be achieved by increasing this number. However, we will show that the current accuracy is already sufficiently high.
+A first guess of the out-of-sample error is provided by the out-of-bag (OOB) error, which is extremely small (only 0.75%). Moreover, note that the random forest algorithm automatically bootstraps the given data, so that cross-validation is an inherent part of this algorithm.
+```{r rf, cache=TRUE}
+mod <- randomForest(classe~., data=training, importance=TRUE, ntree=50)
+mod$err.rate[50,1]
+```
+
+This random forest model leads to the following (perfect) confusion matrix:
+```{r}
+pred <- predict(mod, training)
+cM <- confusionMatrix(pred, training$classe)
+cM$table
+```
+
+The `confusionMatrix` function also calculates some accuracy metrics on the training set. Note that these metrics are in-of-sample metrics, and typically overestimate the (out-of-sample) accuracy. Nevertheless, the 95% confidence interval of the accuracy here is [99.97% and 100%], and hence very high. Consequently, the number of trees in the random forest seems to be sufficient.
+```{r} 
+cM$overall[1:4]
+```
+
+#### Cross-validation
+The metrics calculated above are in-of-sample metrics. When applying the model to new data, the out-of-sample metrics are important. These out-of-sample metrics can be calculated on the `validating` data, which were not used to train the model. From the confusion matrix, it is clear that only 21 of the 4904 observations are misclassified. Moreover, if one would only be interested in correct (classe A) versus incorrect (classes B to E) lifts, only 2 observations are misclassified.
+```{r}
+predVal <- predict(mod, newdata=validating)
+cMVal <- confusionMatrix(predVal, validating$classe)
+cMVal$table
+```
+
+Indeed, we see that the 95% confidence interval for the accuracy is found in between 99.35% and 99.73%, which is our estimate for the out-of-sample accuracy.
+```{r} 
+cMVal$overall[1:4]
+```
+
+#### Test results
+Using the model developed above, the 20 observations of the `testing` dataframe are predicted and written to a set of external files. All of these 20 observations are correctly classified.
+```{r}
+predTest <- predict(mod, newdata=testing)
+
+if(!file.exists('./test')){
+  dir.create('./test')
+  }
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0('./test/problem_id_',i,'.txt')
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(predTest)
+```
+
+### Discussion
+The random forest algorithm was used to predict the outcome of a set of barbell lifting experiments. The resulting model was extremely accurate (>99.35%), which is probably due to the controlled conditions in the experiment. It can be expected that the true out-of-sample accuracy, when applied to real-life lifting, might be somewhat lower. However, without real-life data, this claim cannot be verified. For the controlled experiments, however, this model has an out-of-sample error of only 0.4%.
+
+### References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. *Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).* Stuttgart, Germany: ACM SIGCHI, 2013.
